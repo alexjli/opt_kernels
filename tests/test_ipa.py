@@ -16,7 +16,7 @@ def test_ipa_kernel():
 
     B = 4
     H = 8
-    L = 128
+    L = 130 #128
     D = 32
     D_bias = 16
     qk_pts = 8
@@ -171,7 +171,7 @@ def test_ipa_autograd_func():
 
     B = 4
     H = 8
-    L = 128
+    L = 130 #128
     D = 32
     D_bias = 16
     qk_pts = 8
