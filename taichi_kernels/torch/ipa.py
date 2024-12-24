@@ -23,7 +23,8 @@ class FusedIPAKernel(torch.autograd.Function):
         # get some important constants
         c_v = v.shape[-1]
         n_v_pts = v_pts.shape[-2]
-        B, H, L_i, L_j, D_bias = z_out_bias.shape
+        B, L_i, L_j, D_bias = z_out_bias.shape
+        B, H, L_i, L_j = z_attn_bias.shape
         device = q.device
 
         # create the tensors for taichi kernel output
@@ -33,19 +34,19 @@ class FusedIPAKernel(torch.autograd.Function):
         lse_store = torch.zeros((B, H, L_i), device=device)
 
         ti.ad.no_grad(ipa_sdpa_fwd)(
-            q=q.detach(),
-            q_pts=q_pts.detach(),
-            k=k.detach(),
-            k_pts=k_pts.detach(),
-            v=v.detach(),
-            v_pts=v_pts.detach(),
-            z_attn_bias=z_attn_bias.detach(),
-            z_out_bias=z_out_bias.detach(),
+            q=q.contiguous().detach(),
+            q_pts=q_pts.contiguous().detach(),
+            k=k.contiguous().detach(),
+            k_pts=k_pts.contiguous().detach(),
+            v=v.contiguous().detach(),
+            v_pts=v_pts.contiguous().detach(),
+            z_attn_bias=z_attn_bias.contiguous().detach(),
+            z_out_bias=z_out_bias.contiguous().detach(),
             out=out,
             out_pts=out_pts,
             out_bias=out_bias,
             L=lse_store,
-            pts_bias_scale=pts_bias_scale.detach()
+            pts_bias_scale=pts_bias_scale.contiguous().detach()
         )
 
         return out, out_pts, out_bias, lse_store
@@ -86,19 +87,19 @@ class FusedIPAKernel(torch.autograd.Function):
         pts_bias_scale_grad = torch.zeros_like(pts_bias_scale)
 
         ti.ad.no_grad(ipa_sdpa_bwd)(
-            q=q.detach(),
-            q_pts=q_pts.detach(),
-            k=k.detach(),
-            k_pts=k_pts.detach(),
-            v=v.detach(),
-            v_pts=v_pts.detach(),
-            z_attn_bias=z_attn_bias.detach(),
-            z_out_bias=z_out_bias.detach(),
-            out=out.detach(),
-            out_pts=out_pts.detach(),
-            out_bias=out_bias.detach(),
-            L=lse_store.detach(),
-            pts_bias_scale=pts_bias_scale.detach(),
+            q=q.contiguous().detach(),
+            q_pts=q_pts.contiguous().detach(),
+            k=k.contiguous().detach(),
+            k_pts=k_pts.contiguous().detach(),
+            v=v.contiguous().detach(),
+            v_pts=v_pts.contiguous().detach(),
+            z_attn_bias=z_attn_bias.contiguous().detach(),
+            z_out_bias=z_out_bias.contiguous().detach(),
+            out=out.contiguous().detach(),
+            out_pts=out_pts.contiguous().detach(),
+            out_bias=out_bias.contiguous().detach(),
+            L=lse_store.contiguous().detach(),
+            pts_bias_scale=pts_bias_scale.contiguous().detach(),
             q_grad=q_grad,
             q_pts_grad=q_pts_grad,
             k_grad=k_grad,
@@ -107,9 +108,9 @@ class FusedIPAKernel(torch.autograd.Function):
             v_pts_grad=v_pts_grad,
             z_attn_bias_grad=z_attn_bias_grad,
             z_out_bias_grad=z_out_bias_grad,
-            out_grad=out_grad.detach(),
-            out_pts_grad=out_pts_grad.detach(),
-            out_bias_grad=out_bias_grad.detach(),
+            out_grad=out_grad.contiguous().detach(),
+            out_pts_grad=out_pts_grad.contiguous().detach(),
+            out_bias_grad=out_bias_grad.contiguous().detach(),
             pts_bias_scale_grad=pts_bias_scale_grad
         )
 

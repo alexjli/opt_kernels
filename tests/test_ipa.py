@@ -29,7 +29,7 @@ def test_ipa_kernel():
     k_pts = torch.randn((B, H, L, qk_pts, 3), dtype=torch.float32, device=device)
     v_pts = torch.randn((B, H, L, v_pts, 3), dtype=torch.float32, device=device)
     z_attn_bias = torch.randn((B, H, L, L), dtype=torch.float32, device=device)
-    z_out_bias = torch.randn((B, H, L, L, D_bias), dtype=torch.float32, device=device)
+    z_out_bias = torch.randn((B, L, L, D_bias), dtype=torch.float32, device=device)
     pts_bias_scale = torch.ones(H, dtype=torch.float32, device=device)
 
     out = torch.zeros_like(q)
@@ -121,9 +121,10 @@ def test_ipa_kernel():
     torch_out = torch.einsum("...ij,...jk->...ik", attn, v)
     torch_out_pts = torch.einsum("...ij,...jpk->...ipk", attn, v_pts)
     torch_out_bias = torch.sum(
-        attn[..., None] * z_out_bias,
+        attn[..., None] * z_out_bias[..., None, :, :, :],
         dim=-2
     )
+    print(out_bias.shape, torch_out_bias.shape)
     torch.autograd.backward(
         tensors=[torch_out, torch_out_pts, torch_out_bias],
         grad_tensors=[out_grad, out_pts_grad, out_bias_grad],
@@ -184,7 +185,7 @@ def test_ipa_autograd_func():
     k_pts = torch.randn((B, H, L, qk_pts, 3), dtype=torch.float32, device=device)
     v_pts = torch.randn((B, H, L, v_pts, 3), dtype=torch.float32, device=device)
     z_attn_bias = torch.randn((B, H, L, L), dtype=torch.float32, device=device)
-    z_out_bias = torch.randn((B, H, L, L, D_bias), dtype=torch.float32, device=device)
+    z_out_bias = torch.randn((B, L, L, D_bias), dtype=torch.float32, device=device)
     pts_bias_scale = torch.ones(H, dtype=torch.float32, device=device)
 
     for t in [
@@ -213,7 +214,7 @@ def test_ipa_autograd_func():
     torch_out = torch.einsum("...ij,...jk->...ik", attn, v)
     torch_out_pts = torch.einsum("...ij,...jpk->...ipk", attn, v_pts)
     torch_out_bias = torch.sum(
-        attn[..., None] * z_out_bias,
+        attn[..., None] * z_out_bias[..., None, :, :, :],
         dim=-2
     )
     torch.autograd.backward(

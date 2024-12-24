@@ -41,7 +41,7 @@ def ipa_sdpa_fwd(
     num_k_blocks = int(ti.math.ceil(len_k / BLOCK_SIZE))
     c_qk = q.shape[3]
     c_v = v.shape[3]
-    c_z = z_out_bias.shape[4]
+    c_z = z_out_bias.shape[3]
     w_C = ti.sqrt(2. / (9. * ti.cast(n_qk_pts, ti.f32)))
     sdpa_scale = ti.rsqrt(ti.cast(c_qk, ti.f32))
 
@@ -118,7 +118,7 @@ def ipa_sdpa_fwd(
                     for j, c in ti.ndrange(BLOCK_SIZE, c_z):
                         j_idx = j + block_j * BLOCK_SIZE
                         if j_idx < len_k:
-                            out_bias[batch, head, i_idx, c] += ti.exp(curr_m[i] - m_new[i]) * p_ij[i, j] * z_out_bias[batch, head, i_idx, j_idx, c]
+                            out_bias[batch, head, i_idx, c] += ti.exp(curr_m[i] - m_new[i]) * p_ij[i, j] * z_out_bias[batch, i_idx, j_idx, c]
                     for c in ti.ndrange(c_z):
                         out_bias[batch, head, i_idx, c] /= l_new[i]
 
@@ -170,7 +170,7 @@ def ipa_sdpa_bwd(
     num_k_blocks = int(ti.math.ceil(len_k / BLOCK_SIZE))
     c_qk = q.shape[3]
     c_v = v.shape[3]
-    c_z = z_out_bias.shape[4]
+    c_z = z_out_bias.shape[3]
     w_C = ti.sqrt(2. / (9. * ti.cast(n_qk_pts, ti.f32)))
     sdpa_scale = ti.rsqrt(ti.cast(c_qk, ti.f32))
 
@@ -222,7 +222,7 @@ def ipa_sdpa_bwd(
             i_idx = i + block_i * BLOCK_SIZE
             j_idx = j + block_j * BLOCK_SIZE
             if i_idx < len_q and j_idx < len_k:
-                z_out_bias_grad[batch, head, i_idx, j_idx, c] = p_ij[i, j] * out_bias_grad[batch, head, i_idx, c]
+                z_out_bias_grad[batch, i_idx, j_idx, c] += p_ij[i, j] * out_bias_grad[batch, head, i_idx, c]
 
         # compute dP_ij
         dp_ij = ti.Matrix([[0] * BLOCK_SIZE for _ in range(BLOCK_SIZE)], ti.f32)
@@ -240,7 +240,7 @@ def ipa_sdpa_bwd(
                     dp_ij[i, j] += out_pts_grad[batch, head, i_idx, pt_idx].dot(v_pts[batch, head, j_idx, pt_idx])
                 # from `out_bias`
                 for c in ti.ndrange(c_z):
-                    dp_ij[i, j] += out_bias_grad[batch, head, i_idx, c] * z_out_bias[batch, head, i_idx, j_idx, c]
+                    dp_ij[i, j] += out_bias_grad[batch, head, i_idx, c] * z_out_bias[batch, i_idx, j_idx, c]
 
         # compute dS_ij
         ds_ij = ti.Matrix([[0] * BLOCK_SIZE for _ in range(BLOCK_SIZE)], ti.f32)
