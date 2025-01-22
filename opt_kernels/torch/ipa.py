@@ -1,7 +1,7 @@
 import torch
 import taichi as ti
 
-from taichi_kernels.kernels.ipa import ipa_sdpa_fwd, ipa_sdpa_bwd
+from opt_kernels.kernels.taichi_ipa import ipa_sdpa_fwd, ipa_sdpa_bwd
 
 
 class FusedIPAKernel(torch.autograd.Function):
@@ -166,7 +166,7 @@ if __name__ == '__main__':
     import numpy as np
     import time
 
-    from taichi_kernels.kernels.ipa import W_L
+    from opt_kernels.kernels.taichi_ipa import W_L
 
     device = 'cuda:0'
     ti.init(arch=ti.cuda)

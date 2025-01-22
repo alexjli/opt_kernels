@@ -5,7 +5,7 @@ def test_ipa_kernel():
     import taichi as ti
     import numpy as np
 
-    from taichi_kernels.kernels.ipa import ipa_sdpa_fwd, ipa_sdpa_bwd, W_L
+    from opt_kernels.kernels.taichi_ipa import ipa_sdpa_fwd, ipa_sdpa_bwd, W_L
 
     if torch.cuda.is_available():
         device = 'cuda:0'
@@ -160,8 +160,8 @@ def test_ipa_autograd_func():
     import taichi as ti
     import numpy as np
 
-    from taichi_kernels.kernels.ipa import W_L
-    from taichi_kernels.torch.ipa import fused_ipa_kernel
+    from opt_kernels.kernels.taichi_ipa import W_L
+    from opt_kernels.torch.ipa import fused_ipa_kernel
 
     if torch.cuda.is_available():
         device = 'cuda:0'
