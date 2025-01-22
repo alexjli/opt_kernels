@@ -1,2 +1,2 @@
-# taichi_kernels
-Optimized PyTorch kernels written using Taichi Lang
+# opt_kernels
+Optimized PyTorch kernels
