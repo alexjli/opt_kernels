@@ -9,7 +9,6 @@ SERIAL_BLOCK_SIZE = 32
 # BLOCK_SIZE = 2
 W_L = float(np.sqrt(1/3))
 INF = float(1e3)
-NUM_HEADS = 1
 
 # vec3_tensor_type = wp.array(dtype=float, ndim=5)
 
@@ -205,8 +204,8 @@ def generate_fwd_kernel(
             wp.tile_store(block_out, block_i, 0, out_tile)
             wp.tile_store(block_out_bias, block_i, 0, out_bias_tile)
 
-        m = wp.tile_transpose(wp.tile_load(block_M, block_i, BLOCK_SIZE))
-        l = wp.tile_transpose(wp.tile_load(block_L, block_i, BLOCK_SIZE))
+        m = wp.tile_load(block_M, block_i, BLOCK_SIZE)
+        l = wp.tile_load(block_L, block_i, BLOCK_SIZE)
         _L = m + wp.tile_map(wp.log, l)
         wp.tile_store(block_L, block_i, _L)
 
@@ -253,7 +252,7 @@ def generate_bwd_kernel(
         out_grad: tensor4d_type,
         out_pts_grad: tensor4d_type,
         out_bias_grad: tensor4d_type,
-        pts_bias_scale_grad: wp.array2d(dtype=float)
+        pts_bias_scale_grad: wp.array3d(dtype=float)  # this needs to be 3d so we can tile_assign
     ):
         # define a bunch of necessary constants
         len_k = k.shape[2]
@@ -287,6 +286,11 @@ def generate_bwd_kernel(
         block_v_pts_grad = v_pts_grad[batch]
         block_attn_bias_grad = z_attn_bias_grad[batch, head]
 
+        # TODO: parallelize over j rather than i,
+        # then we can accumulate into j tiles and save once at the end
+        dK_j_tile = wp.tile_zeros(BLOCK_SIZE, channel_dim, dtype=float)
+        dV_j_tile = wp.tile_zeros(BLOCK_SIZE, channel_dim, dtype=float)
+
         for block_j in range(num_k_blocks):
             lse = wp.tile_transpose(wp.tile_load(block_L, block_i, BLOCK_SIZE))
             pt_dist = wp.tile_zeros(BLOCK_SIZE, BLOCK_SIZE, dtype=float)
@@ -314,7 +318,7 @@ def generate_bwd_kernel(
                 pt_dist += pt_dist_update
 
             # add negative sign here
-            pt_dist *= pts_bias_scale[head] * w_C / (-2.)
+            # pt_dist *= pts_bias_scale[head] * w_C / (-2.)
 
             q_tile = wp.tile_load(block_q, block_i, 0, BLOCK_SIZE, channel_dim)
             k_tile = wp.tile_load(block_k, block_j, 0, BLOCK_SIZE, channel_dim)
@@ -325,7 +329,7 @@ def generate_bwd_kernel(
             s_ij = W_L * (
                 sdpa_scale * dpa
                 + bias
-                + pt_dist
+                + (pts_bias_scale[head] * w_C / (-2.)) * pt_dist
             )
             p_ij = s_ij + (- wp.tile_broadcast(lse, BLOCK_SIZE, BLOCK_SIZE))
             p_ij = wp.tile_map(wp.exp, p_ij)
@@ -334,14 +338,15 @@ def generate_bwd_kernel(
             # update dV_j
             out_grad_tile = wp.tile_load(block_out_grad, block_i, 0, BLOCK_SIZE, channel_dim)
             v_grad_tile = wp.tile_matmul(p_ij_T, out_grad_tile)
-            wp.tile_store(block_v_grad, block_i, 0, v_grad_tile)
+            # print(v_grad_tile)
+            wp.tile_atomic_add(block_v_grad, block_j, 0, v_grad_tile)
 
             # update dV_pts_j
             for p in range(n_v_pts):
                 head_p = head * n_v_pts + p
                 out_pts_grad_tile = wp.tile_load(block_out_pts_grad[head_p], block_i, 0, BLOCK_SIZE, 3)
                 v_pts_grad_tile = wp.tile_matmul(p_ij_T, out_pts_grad_tile)
-                wp.tile_store(block_v_pts_grad[head_p], block_i, 0, v_pts_grad_tile)
+                wp.tile_atomic_add(block_v_pts_grad[head_p], block_j, 0, v_pts_grad_tile)
 
             # update dZ_out_bias_j
             out_bias_grad_tile = wp.tile_load(block_out_bias_grad, block_i, 0, BLOCK_SIZE, bias_dim)
@@ -378,6 +383,9 @@ def generate_bwd_kernel(
 
 
             # compute dS_ij
+            # there's a lot of shenanigans going on here
+            # for one, since warp doesn't have rowwise operators
+            # we're getting around this by doing an outer product and taking the diagonal
             out_tile = wp.tile_load(block_out, block_i, 0, BLOCK_SIZE, channel_dim)
             # from `out`
             d_i_out = wp.tile_matmul(out_grad_tile, wp.tile_transpose(out_tile))
@@ -398,6 +406,8 @@ def generate_bwd_kernel(
             d_i_out_pts_update = wp.tile_zeros(BLOCK_SIZE, 1, dtype=float)
             d_i_out_bias_update = wp.tile_zeros(BLOCK_SIZE, 1, dtype=float)
             for i in range(BLOCK_SIZE):
+                # in order to take the diagonal element, we have to do this select-transpose-select mess
+                # because tile_assign requires a tile as input and we can only select against the outer-most axis
                 wp.tile_assign(d_i_out_update[i], 0, 0, wp.tile_transpose(d_i_out[i])[i])
                 wp.tile_assign(d_i_out_pts_update[i], 0, 0, wp.tile_transpose(d_i_out_pts[i])[i])
                 wp.tile_assign(d_i_out_bias_update[i], 0, 0, wp.tile_transpose(d_i_out_bias[i])[i])
@@ -412,7 +422,7 @@ def generate_bwd_kernel(
                 p_ij,
                 dp_ij + (- wp.tile_broadcast(d_i, BLOCK_SIZE, BLOCK_SIZE))
             )
-            print(ds_ij)
+            # print(ds_ij)
 
             # update db_ij
             wp.tile_store(
@@ -422,14 +432,15 @@ def generate_bwd_kernel(
                 W_L * ds_ij
             )
             # update d_gamma_h (ipa head weights)
-            pts_b_ij_grad = pt_dist * W_L   # pt_dist already has some of the scaling coefficients
+            pts_b_ij_grad = (W_L * w_C / (-2.)) * pt_dist
             pts_b_ij_grad = wp.tile_map(
                 wp.mul,
                 pts_b_ij_grad,
                 ds_ij
             )
-            wp.tile_store(
+            wp.tile_atomic_add(
                 pts_bias_scale_grad[head],
+                0,
                 0,
                 wp.tile_sum(pts_b_ij_grad)
             )
@@ -474,7 +485,7 @@ def generate_bwd_kernel(
                 ds_ij,
                 k_tile
             ) * W_L * sdpa_scale
-            wp.tile_store(block_q_grad, block_i, 0, q_grad_tile)
+            wp.tile_atomic_add(block_q_grad, block_i, 0, q_grad_tile)
 
             # update dK_j
             q_tile = wp.tile_load(block_q, block_i, 0, BLOCK_SIZE, channel_dim)
@@ -482,7 +493,7 @@ def generate_bwd_kernel(
                 ds_ij_T,
                 q_tile
             ) * W_L * sdpa_scale
-            wp.tile_store(block_k_grad, block_j, 0, k_grad_tile)
+            wp.tile_atomic_add(block_k_grad, block_j, 0, k_grad_tile)
 
     return ipa_sdpa_bwd
 
@@ -500,11 +511,8 @@ if __name__ == '__main__':
         device='cpu'
     wp.init()
 
-    B = 1
-    H = NUM_HEADS
-    L = 4
-    D = 4
-    D_bias = 16
+    D = 1
+    D_bias = 1
     n_qk_pts = 8
     n_v_pts = 12
 
@@ -523,7 +531,11 @@ if __name__ == '__main__':
         dtype=float,
     )
 
-    q = torch.randn((B, L, H * D), dtype=torch.float32, device=device).view(B, L, H, D).transpose(-2, -3)
+    B = 2
+    H = 8
+    L = 16
+
+    q = torch.randn((B, H, L, D), dtype=torch.float32, device=device)
     k = torch.randn((B, H, L, D), dtype=torch.float32, device=device)
     v = torch.randn((B, H, L, D), dtype=torch.float32, device=device)
     q_pts = torch.randn((B, H * n_qk_pts, L, 3), dtype=torch.float32, device=device)
@@ -568,9 +580,9 @@ if __name__ == '__main__':
         inputs=torch_inputs,
         block_dim=256
     )
-
     # print(out)
-    # print(lse_store)
+    print("lse", lse_store)
+    print("m_store", m_store)
 
     q_grad = torch.zeros_like(q)
     k_grad = torch.zeros_like(k)
@@ -583,7 +595,7 @@ if __name__ == '__main__':
     out_grad = torch.ones_like(out)
     out_pts_grad = torch.ones_like(out_pts)
     out_bias_grad = torch.ones_like(out_bias)
-    pts_bias_scale_grad = torch.ones_like(pts_bias_scale[..., None])
+    pts_bias_scale_grad = torch.zeros_like(pts_bias_scale[..., None, None])
 
     torch_grad_inputs = [
         q, #.transpose(-1, -2),
@@ -636,7 +648,6 @@ if __name__ == '__main__':
     ]:
         t.requires_grad = True
 
-
     start = time.time()
     w_C = np.sqrt(2/(9*q_pts.shape[-2]))
     attn = torch.einsum("...ik,...jk->...ij", q, k) * 1/np.sqrt(q.shape[-1])
@@ -656,8 +667,12 @@ if __name__ == '__main__':
     # print(s_ij)
     p_ij = torch.exp(attn - attn.max(dim=-1)[0][..., None])
     tile_l = p_ij.sum(dim=-1)
+    torch_lse = attn.max(dim=-1)[0] + tile_l.log()
+    print("torch_lse", torch_lse)
+    print("torch_max", attn.max(dim=-1)[0])
     attn = torch.softmax(s_ij, dim=-1)
     attn.retain_grad()
+    print(attn)
     torch_out = torch.einsum("...ij,...jk->...ik", attn, v)
     torch_out_pts = torch.einsum("...ij,...jpk->...ipk", attn, v_pts)
     torch_out_bias = torch.sum(
@@ -675,7 +690,7 @@ if __name__ == '__main__':
             torch.ones_like(torch_out_bias)
         ],
     )
-    print(s_ij.grad)
+    # print(s_ij.grad)
     # forward pass check
     # print(out[0])
     # print(torch_out[0])
@@ -688,6 +703,8 @@ if __name__ == '__main__':
     # print(torch_out_bias[0])
     assert torch.isclose(out_bias, torch_out_bias, atol=1e-6, rtol=1e-4).all()
     # # backward pass check
+    print(v_grad[0, 0])
+    print(v.grad[0, 0])
     assert torch.isclose(v_grad, v.grad, atol=1e-6).all()
     v_pts_grad = v_pts_grad.unflatten(1, (H, n_v_pts)).transpose(-2, -3)
     assert torch.isclose(v_pts_grad, v_pts.grad, atol=1e-6).all()
@@ -706,7 +723,7 @@ if __name__ == '__main__':
     )
     assert torch.isclose(k_grad, k.grad, atol=1e-6).all()
     # # TODO: why is this error so large relative to everything else...
-    pts_bias_scale_grad = pts_bias_scale_grad[..., 0]
+    pts_bias_scale_grad = pts_bias_scale_grad[..., 0, 0]
     assert torch.isclose(pts_bias_scale_grad, pts_bias_scale.grad, atol=1e-3).all(), (
         pts_bias_scale_grad[~torch.isclose(pts_bias_scale_grad, pts_bias_scale.grad, atol=1e-3)],
         pts_bias_scale.grad[~torch.isclose(pts_bias_scale_grad, pts_bias_scale.grad, atol=1e-3)]
