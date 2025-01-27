@@ -6,6 +6,9 @@ import warp as wp
 
 from opt_kernels.kernels.warp_ipa import generate_fwd_kernel, generate_bwd_kernel, BLOCK_SIZE, INF
 
+class ComputeCapabilityError(Exception):
+    pass
+
 _FWD_KERNEL_CACHE = {}
 _BWD_KERNEL_CACHE = {}
 
@@ -203,6 +206,15 @@ def fused_ipa_kernel(
     n_qk_pts=8,
     n_v_pts=12,
 ):
+    # do our checks
+    device = q.device
+    major, minor = torch.cuda.get_device_capability(device)
+    if not (major >= 7):
+        raise ComputeCapabilityError(f"fused_ipa_kernel requires compute_cap>7.0 but {device} has compute_cap={major}.{minor}")
+
+    L = q.shape[-2]
+    assert L % BLOCK_SIZE == 0, f"fused_ipa_kernel can only accept inputs which are multiples of BLOCK_SIZE={BLOCK_SIZE}"
+
     out, out_pts, out_bias, _ = FusedIPAKernel.apply(
         q,
         q_pts,
